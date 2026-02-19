@@ -8,6 +8,11 @@ Standalone React Native (Expo) mobile app scaffold for running the Story Room wo
 - User-configurable Ollama host + port.
 - Model dropdown populated from `GET /api/tags`.
 - Story-room scene loop adapted from the provided application example.
+- Story bible review stage with retry + editable bible text before acceptance; acceptance then presents three scene-start options.
+- Auto Mode toggle: Editor auto-selects the best continuation option and auto-accepts scene-review steps to run hands-free.
+- Character review voice updated to method-actor style feedback in third person.
+- Retry Revision now rebuilds from the original draft + original direction and includes any additional user suggestions.
+- Added a "Start Over Completely" control to wipe all persisted story state and return to setup.
 - **Character Corner**:
   - Lists all known characters.
   - Character detail editor for full memory objects (`workingMemory`, `episodicMemory`, and `longTermMemory`) as editable JSON.
@@ -23,7 +28,7 @@ Standalone React Native (Expo) mobile app scaffold for running the Story Room wo
 - Lightweight long-term character memory retrieval:
   - Per-character long-term memory entries are appended (not overwritten).
   - A planning/retrieval step uses token-overlap ranking to inject relevant memory into character reactions.
-- Full story state export/import (JSON) from inside the app.
+- File-based story state save/load (JSON) from inside the app (choose filename for save, pick file for load; no raw JSON editor display).
 
 ## Run locally
 

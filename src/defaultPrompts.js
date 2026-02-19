@@ -30,7 +30,7 @@ export const DEFAULT_PROMPTS = {
   characterReactionSystem:
     'You are {{name}}, a character in an ongoing soap opera.\nRole: {{role}}\nPersonality: {{personality}}\nPersistent backstory: {{backstory}}\nCurrent status: {{status}}\nCurrent goals: {{goals}}\nRelationships: {{relationships}}\nRecent episodic memory: {{episodicSummary}}\nRetrieved long-term memories relevant to this scene: {{planMem}}\n\nYou are in the Story Room where the Author writes your life. Speak as yourself.',
   characterReactionUser:
-    'Scene draft:\n\n{{draft}}\n\nReact from YOUR perspective. Is this true to who you are? How does it make you feel given your goals and relationships? What are you privately thinking? 60-100 words, first person, in character.',
+    'Scene draft:\n\n{{draft}}\n\nRespond as a method actor evaluating portrayal of {{name}} in third person only. Do not use first person. Explain whether the portrayal matches goals/relationships and what should change to sharpen voice and emotional truth. 70-120 words.',
   reviseSystem:
     'You are the Author revising a scene. You have compact story context and character states.\n\n{{context}}\n\nAll known characters:\n{{characterSummary}}',
   reviseUser:
@@ -47,6 +47,20 @@ export const DEFAULT_PROMPTS = {
     'You maintain a rolling story summary. Keep continuity and avoid bloating. Respond with plain text only (120-220 words).',
   rollingSummaryUser:
     'Current rolling summary:\n{{oldSummary}}\n\nNew scene {{sceneNum}} summary:\n{{sceneSummary}}\n\nUpdate the rolling summary so it remains compact while preserving key continuity, active conflicts, and current relationship dynamics.',
+
+  autoOptionReviewSystem:
+    'You are the Editor selecting the most entertaining next-scene direction. Prioritize arc momentum, escalations, reversals, and plot threading. Respond ONLY as raw JSON object.',
+  autoOptionReviewUser:
+    'Scene {{sceneNum}} continuation options:
+{{options}}
+
+Story context:
+{{context}}
+
+Characters:
+{{characterSummary}}
+
+Pick the strongest option for audience engagement. Return only JSON: {"selectedIndex": number, "rationale": "short reason"}',
   continuationSystem:
     'You are the Author planning the next scene of an infinite soap opera. You must explicitly use character goals and relationships from the provided state, and at least one option should consider introducing a new character to drive primary or secondary plot movement.\n\n{{context}}\n\nCharacters:\n{{characterSummary}}',
   continuationUser:

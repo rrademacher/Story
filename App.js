@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Picker } from '@react-native-picker/picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
 import { DEFAULT_PROMPTS } from './src/defaultPrompts';
 
 const STORAGE_KEY = 'story-room-mobile-v2';
@@ -19,6 +21,7 @@ const STORAGE_KEY = 'story-room-mobile-v2';
 const PHASE = {
   LOADING: 'LOADING',
   SETUP: 'SETUP',
+  BIBLE_REVIEW: 'BIBLE_REVIEW',
   DRAFTING: 'DRAFTING',
   ED_REVIEW: 'ED_REVIEW',
   CHAR_REACT: 'CHAR_REACT',
@@ -30,6 +33,7 @@ const PHASE = {
 const PHASE_LABEL = {
   [PHASE.LOADING]: 'Loading...',
   [PHASE.SETUP]: 'Setup',
+  [PHASE.BIBLE_REVIEW]: 'Story Bible Review',
   [PHASE.DRAFTING]: 'Author Drafting',
   [PHASE.ED_REVIEW]: 'Editor Reviewing',
   [PHASE.CHAR_REACT]: 'Characters Reacting',
@@ -211,8 +215,12 @@ export default function App() {
   const [editableDraft, setEditableDraft] = useState('');
   const [contOptions, setContOptions] = useState([]);
   const [setupInput, setSetupInput] = useState('');
+  const [setupAuthorOpen, setSetupAuthorOpen] = useState('');
+  const [pendingBible, setPendingBible] = useState('');
   const [customInput, setCustomInput] = useState('');
   const [sceneNum, setSceneNum] = useState(1);
+  const [autoMode, setAutoMode] = useState(false);
+  const [revisionNotes, setRevisionNotes] = useState('');
 
   const [lastCycle, setLastCycle] = useState(null);
 
@@ -225,8 +233,7 @@ export default function App() {
   const [episodicJson, setEpisodicJson] = useState('');
   const [longTermJson, setLongTermJson] = useState('');
 
-  const [storyTransferOpen, setStoryTransferOpen] = useState(false);
-  const [storyTransferText, setStoryTransferText] = useState('');
+  const [storyFileName, setStoryFileName] = useState('story-room-state.json');
 
   const baseUrl = useMemo(() => `http://${serverHost.trim()}:${serverPort.trim()}`, [serverHost, serverPort]);
 
@@ -251,6 +258,10 @@ export default function App() {
       sceneNum,
       contOptions,
       lastCycle,
+      setupAuthorOpen,
+      pendingBible,
+      autoMode,
+      revisionNotes,
       ...overrides,
     };
   }
@@ -317,6 +328,18 @@ export default function App() {
     return retrieved.length ? retrieved.join(' | ') : 'No directly relevant long-term memories found.';
   }
 
+
+  useEffect(() => {
+    if (phase !== PHASE.CONT_CHOICE || !autoMode || isBusy || !contOptions.length || !storyBible) return;
+    (async () => {
+      try {
+        await autoAdvanceFromChoices(contOptions, characters, approved, storyBible, sceneNum);
+      } catch (e) {
+        sys(`Auto selection failed: ${e.message}`);
+      }
+    })();
+  }, [phase, autoMode, isBusy, contOptions, storyBible, sceneNum]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -338,7 +361,11 @@ export default function App() {
         setContOptions(s.contOptions || []);
         setPrompts(s.prompts || DEFAULT_PROMPTS);
         setLastCycle(s.lastCycle || null);
-        setPhase(s.storyBible ? PHASE.CONT_CHOICE : PHASE.SETUP);
+        setSetupAuthorOpen(s.setupAuthorOpen || '');
+        setPendingBible(s.pendingBible || '');
+        setAutoMode(!!s.autoMode);
+        setRevisionNotes(s.revisionNotes || '');
+        setPhase(s.pendingBible ? PHASE.BIBLE_REVIEW : s.storyBible ? PHASE.CONT_CHOICE : PHASE.SETUP);
       } catch {
         setPhase(PHASE.SETUP);
       }
@@ -358,27 +385,15 @@ export default function App() {
 
       const match = edResp.match(/=== STORY BIBLE ===([\s\S]*?)=== END BIBLE ===/);
       const bible = match ? match[1].trim() : edResp;
-      const firstOpt = [{ label: 'Begin Scene 1', direction: 'Open the story, establishing the world and introducing at least two characters from the story bible.', pov: 'Author' }];
 
-      setStoryBible(bible);
-      setContOptions(firstOpt);
-      setSceneNum(1);
-      setCharacters([]);
-      setApproved([]);
-      setSceneSummaries([]);
-      setRollingSummary('');
-      setPhase(PHASE.CONT_CHOICE);
+      setSetupAuthorOpen(authorOpen);
+      setPendingBible(bible);
+      setPhase(PHASE.BIBLE_REVIEW);
 
       await persist(
         makeSnapshot({
-          storyBible: bible,
-          contOptions: firstOpt,
-          sceneNum: 1,
-          characters: [],
-          approved: [],
-          sceneSummaries: [],
-          rollingSummary: '',
-          lastCycle: null,
+          setupAuthorOpen: authorOpen,
+          pendingBible: bible,
         }),
       );
     } catch (e) {
@@ -388,12 +403,101 @@ export default function App() {
     }
   }
 
-  async function buildRevisedScene({ ctx, allChars, draft, edReview, sceneChars, num }) {
+  async function retryStoryBible() {
+    if (isBusy) return;
+    await handleSetup();
+  }
+
+  async function acceptStoryBible() {
+    if (isBusy || !pendingBible.trim()) return;
+    const firstOpt = [
+      {
+        label: 'Begin Scene 1',
+        direction: 'Open the story, establishing the world and introducing at least two characters from the story bible.',
+        pov: 'Author',
+      },
+      {
+        label: 'Start with a personal rupture',
+        direction: 'Begin with a key relationship fracture that reveals private goals and conflicting loyalties.',
+        pov: 'Character POV',
+      },
+      {
+        label: 'Introduce an outsider catalyst',
+        direction: 'Open with a new character arrival whose agenda destabilizes existing alliances and ignites a secondary plot.',
+        pov: 'New Character',
+      },
+    ];
+
+    setStoryBible(pendingBible.trim());
+    setPendingBible('');
+    setSceneNum(1);
+    setCharacters([]);
+    setApproved([]);
+    setSceneSummaries([]);
+    setRollingSummary('');
+    setContOptions(firstOpt);
+    setChat([]);
+    setRevisionNotes('');
+    setPhase(PHASE.CONT_CHOICE);
+
+    await persist(
+      makeSnapshot({
+        storyBible: pendingBible.trim(),
+        pendingBible: '',
+        setupAuthorOpen,
+        sceneNum: 1,
+        characters: [],
+        approved: [],
+        sceneSummaries: [],
+        rollingSummary: '',
+        contOptions: firstOpt,
+        lastCycle: null,
+      }),
+    );
+
+    if (autoMode) {
+      await autoAdvanceFromChoices(firstOpt, [], [], pendingBible.trim(), 1);
+    }
+  }
+
+
+
+  async function pickBestOption(options, ctx, chars, nextSceneNum) {
+    const serialized = JSON.stringify(options);
+    const response = await callOllama(
+      prompts.autoOptionReviewSystem,
+      fill(prompts.autoOptionReviewUser, {
+        sceneNum: nextSceneNum,
+        context: ctx,
+        characterSummary: buildCharSummary(chars),
+        options: serialized,
+      }),
+      { maxTokens: 500 },
+    );
+    const parsed = tryParseJson(response, null);
+    const idx = Number(parsed?.selectedIndex);
+    if (Number.isInteger(idx) && idx >= 0 && idx < options.length) {
+      return { index: idx, rationale: parsed?.rationale || 'Editor-selected for arc momentum.' };
+    }
+    return { index: 0, rationale: 'Fallback to first option.' };
+  }
+
+  async function autoAdvanceFromChoices(options, chars, scenes, bible, num) {
+    if (!autoMode || !Array.isArray(options) || !options.length || isBusy) return;
+    const ctx = buildStoryCtx({ bible, rollingSummary, sceneSummaries, approved: scenes });
+    const pick = await pickBestOption(options, ctx, chars, num);
+    const chosen = options[pick.index] || options[0];
+    sys(`Auto Mode chose: ${chosen.label} (${pick.rationale})`);
+    setChat([]);
+    await runSceneCycle(chosen.direction, chars, scenes, bible, num);
+  }
+
+  async function buildRevisedScene({ ctx, allChars, draft, edReview, sceneChars, num, direction, userSuggestions }) {
     return callOllama(
       fill(prompts.reviseSystem, { context: ctx, characterSummary: buildCharSummary(allChars) }),
       fill(prompts.reviseUser, {
         draft,
-        allFeedback: `EDITOR FEEDBACK:\n${edReview}\n\nCHARACTERS IN THIS SCENE: ${sceneChars.map((c) => c.name).join(', ')}`,
+        allFeedback: `ORIGINAL DIRECTION: ${direction || 'N/A'}\n\nEDITOR FEEDBACK:\n${edReview}\n\nCHARACTERS IN THIS SCENE: ${sceneChars.map((c) => c.name).join(', ')}\n\nADDITIONAL USER SUGGESTIONS:\n${userSuggestions || 'None provided.'}`,
       }),
       { maxTokens: 1800 },
     );
@@ -448,14 +552,14 @@ export default function App() {
             episodicSummary: c.episodicMemory.slice(-6).join('; ') || 'no prior scenes',
             planMem,
           }),
-          fill(prompts.characterReactionUser, { draft }),
+          fill(prompts.characterReactionUser, { draft, name: c.name }),
           { maxTokens: 500 },
         );
         addMsg(c.name, reaction);
       }
 
       setPhase(PHASE.AUTH_REVISE);
-      const revised = await buildRevisedScene({ ctx, allChars, draft, edReview, sceneChars, num });
+      const revised = await buildRevisedScene({ ctx, allChars, draft, edReview, sceneChars, num, direction, userSuggestions: revisionNotes });
       addMsg('Author', `**[Scene ${num} — Revised]**\n\n${revised}`);
 
       setEditableDraft(revised);
@@ -464,6 +568,11 @@ export default function App() {
       setPhase(PHASE.USER_EDIT);
 
       await persist(makeSnapshot({ characters: allChars, lastCycle: { sceneNum: num, direction, draft, edReview, sceneCharacterNames: sceneChars.map((c) => c.name), allCharacterNames: allChars.map((c) => c.name) } }));
+
+      if (autoMode) {
+        sys('Auto Mode: auto-accepting revised scene and continuing.');
+        await autoAcceptScene(revised, allChars);
+      }
     } catch (e) {
       sys(`Scene cycle failed: ${e.message}`);
       setPhase(PHASE.CONT_CHOICE);
@@ -479,9 +588,9 @@ export default function App() {
       setPhase(PHASE.AUTH_REVISE);
       const ctx = buildStoryCtx({ bible: storyBible, rollingSummary, sceneSummaries, approved });
       const sceneChars = characters.filter((c) => lastCycle.sceneCharacterNames.map(normalizeName).includes(normalizeName(c.name)));
-      const revised = await buildRevisedScene({ ctx, allChars: characters, draft: lastCycle.draft, edReview: lastCycle.edReview, sceneChars, num: sceneNum });
+      const revised = await buildRevisedScene({ ctx, allChars: characters, draft: lastCycle.draft, edReview: lastCycle.edReview, sceneChars, num: sceneNum, direction: lastCycle.direction, userSuggestions: revisionNotes });
       setEditableDraft(revised);
-      addMsg('System', 'Generated a new revision pass for review.');
+      addMsg('System', 'Generated a new revision from the initial draft and suggestion, incorporating any additional user suggestions.');
       addMsg('Author', `**[Scene ${sceneNum} — Revised Retry]**\n\n${revised}`);
       setPhase(PHASE.USER_EDIT);
       await persist(makeSnapshot());
@@ -493,101 +602,111 @@ export default function App() {
     }
   }
 
+  async function autoAcceptScene(sceneText, characterListOverride) {
+    const acceptedScene = (sceneText || '').trim();
+    if (!acceptedScene) return;
+
+    const currentCharacters = characterListOverride || characters;
+    const newApproved = [...approved, acceptedScene];
+    const newNum = sceneNum + 1;
+
+    const sceneParticipants = await identifySceneParticipants(acceptedScene, currentCharacters);
+    const participantKeys = new Set(sceneParticipants.map((c) => normalizeName(c.name)));
+
+    const updatedChars = [];
+    for (const c of currentCharacters) {
+      if (!participantKeys.has(normalizeName(c.name))) {
+        updatedChars.push(c);
+        continue;
+      }
+
+      const memRaw = await callOllama(
+        prompts.memoryUpdateSystem,
+        fill(prompts.memoryUpdateUser, {
+          name: c.name,
+          persistentBackstory: c.persistentBackstory || c.backstory,
+          workingMemory: JSON.stringify(c.workingMemory),
+          episodicMemory: c.episodicMemory.slice(-10).join('; ') || 'none',
+          scene: acceptedScene,
+        }),
+      );
+      const upd = tryParseJson(memRaw, null);
+      const episodicEntry = upd?.newEpisodicEntry || `Scene ${sceneNum}: ${c.name} was involved in unfolding events.`;
+      const longTermEntry = {
+        id: `mem-${sceneNum}-${normalizeName(c.name)}-${Date.now()}`,
+        sceneNum,
+        text: upd?.longTermMemoryEntry || episodicEntry,
+        tags: Array.isArray(upd?.tags) ? upd.tags : tokenize(`${c.workingMemory?.goals || ''} ${c.workingMemory?.relationships || ''}`).slice(0, 6),
+      };
+
+      updatedChars.push(
+        normalizeCharacter({
+          ...c,
+          workingMemory: upd?.workingMemory || c.workingMemory,
+          episodicMemory: [...(c.episodicMemory || []), episodicEntry],
+          longTermMemory: appendUniqueMemory(c.longTermMemory || [], [longTermEntry]),
+        }),
+      );
+    }
+
+    const summaryRaw = await callOllama(prompts.sceneSummarySystem, fill(prompts.sceneSummaryUser, { sceneNum, scene: acceptedScene }), { maxTokens: 300 });
+    const sceneSummaryText = summaryRaw.trim() || `Scene ${sceneNum} advanced the main conflict.`;
+    const newSceneSummaries = [...sceneSummaries, { sceneNum, summary: sceneSummaryText }];
+
+    const rollingRaw = await callOllama(
+      prompts.rollingSummarySystem,
+      fill(prompts.rollingSummaryUser, {
+        oldSummary: rollingSummary || 'No prior rolling summary.',
+        sceneNum,
+        sceneSummary: sceneSummaryText,
+      }),
+      { maxTokens: 500 },
+    );
+    const nextRolling = rollingRaw.trim() || rollingSummary;
+
+    const ctx = buildStoryCtx({ bible: storyBible, rollingSummary: nextRolling, sceneSummaries: newSceneSummaries, approved: newApproved });
+    const optsRaw = await callOllama(
+      fill(prompts.continuationSystem, { context: ctx, characterSummary: buildCharSummary(updatedChars) }),
+      fill(prompts.continuationUser, { sceneNum: newNum }),
+      { maxTokens: 900 },
+    );
+    const parsedOpts = tryParseJson(optsRaw, []);
+    const nextOpts = Array.isArray(parsedOpts) && parsedOpts.length
+      ? parsedOpts
+      : [{ label: 'Continue naturally', direction: 'Continue the story from where the last scene ended.', pov: 'Author' }];
+
+    setApproved(newApproved);
+    setSceneSummaries(newSceneSummaries);
+    setRollingSummary(nextRolling);
+    setCharacters(updatedChars);
+    setSceneNum(newNum);
+    setChat([{ id: `${Date.now()}`, role: 'System', content: `Scene ${sceneNum} accepted.` }]);
+    setContOptions(nextOpts);
+    setLastCycle(null);
+    setPhase(PHASE.CONT_CHOICE);
+
+    await persist(
+      makeSnapshot({
+        approved: newApproved,
+        sceneSummaries: newSceneSummaries,
+        rollingSummary: nextRolling,
+        characters: updatedChars,
+        sceneNum: newNum,
+        contOptions: nextOpts,
+        lastCycle: null,
+      }),
+    );
+
+    if (autoMode) {
+      await autoAdvanceFromChoices(nextOpts, updatedChars, newApproved, storyBible, newNum);
+    }
+  }
+
   async function handleAccept() {
     if (!editableDraft.trim() || isBusy) return;
     setIsBusy(true);
     try {
-      const acceptedScene = editableDraft.trim();
-      const newApproved = [...approved, acceptedScene];
-      const newNum = sceneNum + 1;
-
-      const sceneParticipants = await identifySceneParticipants(acceptedScene, characters);
-      const participantKeys = new Set(sceneParticipants.map((c) => normalizeName(c.name)));
-
-      const updatedChars = [];
-      for (const c of characters) {
-        if (!participantKeys.has(normalizeName(c.name))) {
-          updatedChars.push(c);
-          continue;
-        }
-
-        const memRaw = await callOllama(
-          prompts.memoryUpdateSystem,
-          fill(prompts.memoryUpdateUser, {
-            name: c.name,
-            persistentBackstory: c.persistentBackstory || c.backstory,
-            workingMemory: JSON.stringify(c.workingMemory),
-            episodicMemory: c.episodicMemory.slice(-10).join('; ') || 'none',
-            scene: acceptedScene,
-          }),
-        );
-        const upd = tryParseJson(memRaw, null);
-
-        const episodicEntry = upd?.newEpisodicEntry || `Scene ${sceneNum}: ${c.name} was involved in unfolding events.`;
-        const longTermEntry = {
-          id: `mem-${sceneNum}-${normalizeName(c.name)}-${Date.now()}`,
-          sceneNum,
-          text: upd?.longTermMemoryEntry || episodicEntry,
-          tags: Array.isArray(upd?.tags) ? upd.tags : tokenize(`${c.workingMemory?.goals || ''} ${c.workingMemory?.relationships || ''}`).slice(0, 6),
-        };
-
-        updatedChars.push(
-          normalizeCharacter({
-            ...c,
-            workingMemory: upd?.workingMemory || c.workingMemory,
-            episodicMemory: [...(c.episodicMemory || []), episodicEntry],
-            longTermMemory: appendUniqueMemory(c.longTermMemory || [], [longTermEntry]),
-          }),
-        );
-      }
-
-      const summaryRaw = await callOllama(prompts.sceneSummarySystem, fill(prompts.sceneSummaryUser, { sceneNum, scene: acceptedScene }), { maxTokens: 300 });
-      const sceneSummaryText = summaryRaw.trim() || `Scene ${sceneNum} advanced the main conflict.`;
-      const newSceneSummaries = [...sceneSummaries, { sceneNum, summary: sceneSummaryText }];
-
-      const rollingRaw = await callOllama(
-        prompts.rollingSummarySystem,
-        fill(prompts.rollingSummaryUser, {
-          oldSummary: rollingSummary || 'No prior rolling summary.',
-          sceneNum,
-          sceneSummary: sceneSummaryText,
-        }),
-        { maxTokens: 500 },
-      );
-      const nextRolling = rollingRaw.trim() || rollingSummary;
-
-      const ctx = buildStoryCtx({ bible: storyBible, rollingSummary: nextRolling, sceneSummaries: newSceneSummaries, approved: newApproved });
-      const optsRaw = await callOllama(
-        fill(prompts.continuationSystem, { context: ctx, characterSummary: buildCharSummary(updatedChars) }),
-        fill(prompts.continuationUser, { sceneNum: newNum }),
-        { maxTokens: 900 },
-      );
-      const parsedOpts = tryParseJson(optsRaw, []);
-      const nextOpts = Array.isArray(parsedOpts) && parsedOpts.length
-        ? parsedOpts
-        : [{ label: 'Continue naturally', direction: 'Continue the story from where the last scene ended.', pov: 'Author' }];
-
-      setApproved(newApproved);
-      setSceneSummaries(newSceneSummaries);
-      setRollingSummary(nextRolling);
-      setCharacters(updatedChars);
-      setSceneNum(newNum);
-      setChat([{ id: `${Date.now()}`, role: 'System', content: `Scene ${sceneNum} accepted.` }]);
-      setContOptions(nextOpts);
-      setLastCycle(null);
-      setPhase(PHASE.CONT_CHOICE);
-
-      await persist(
-        makeSnapshot({
-          approved: newApproved,
-          sceneSummaries: newSceneSummaries,
-          rollingSummary: nextRolling,
-          characters: updatedChars,
-          sceneNum: newNum,
-          contOptions: nextOpts,
-          lastCycle: null,
-        }),
-      );
+      await autoAcceptScene(editableDraft, characters);
     } catch (e) {
       sys(`Accept failed: ${e.message}`);
     } finally {
@@ -598,8 +717,10 @@ export default function App() {
   async function handleContinue(direction) {
     if (!direction.trim() || isBusy) return;
     setChat([]);
+    setRevisionNotes('');
     await runSceneCycle(direction, characters, approved, storyBible, sceneNum);
   }
+
 
   function openCharacterEditor(character) {
     const normalized = normalizeCharacter(character);
@@ -639,39 +760,115 @@ export default function App() {
     await persist(makeSnapshot({ prompts }));
   }
 
-  function exportStoryState() {
-    setStoryTransferText(JSON.stringify(makeSnapshot(), null, 2));
-    setStoryTransferOpen(true);
+
+  async function handleStartOver() {
+    Alert.alert('Start Over Completely', 'This will erase all current story state. Continue?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Start Over',
+        style: 'destructive',
+        onPress: async () => {
+          await AsyncStorage.removeItem(STORAGE_KEY);
+          setPhase(PHASE.SETUP);
+          setIsBusy(false);
+          setStoryBible('');
+          setApproved([]);
+          setSceneSummaries([]);
+          setRollingSummary('');
+          setCharacters([]);
+          setChat([]);
+          setEditableDraft('');
+          setContOptions([]);
+          setSetupInput('');
+          setSetupAuthorOpen('');
+          setPendingBible('');
+          setCustomInput('');
+          setSceneNum(1);
+          setAutoMode(false);
+          setRevisionNotes('');
+          setLastCycle(null);
+        },
+      },
+    ]);
   }
+
+  async function exportStoryState() {
+    try {
+      const fileName = (storyFileName || 'story-room-state.json').trim().endsWith('.json')
+        ? (storyFileName || 'story-room-state.json').trim()
+        : `${(storyFileName || 'story-room-state').trim()}.json`;
+      const payload = JSON.stringify(makeSnapshot(), null, 2);
+
+      const perms = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!perms.granted) {
+        Alert.alert('Export cancelled', 'Directory permission was not granted.');
+        return;
+      }
+
+      let fileUri;
+      try {
+        fileUri = await FileSystem.StorageAccessFramework.createFileAsync(perms.directoryUri, fileName, 'application/json');
+      } catch {
+        const alt = fileName.replace(/\.json$/i, '') + `-${Date.now()}.json`;
+        fileUri = await FileSystem.StorageAccessFramework.createFileAsync(perms.directoryUri, alt, 'application/json');
+      }
+      await FileSystem.writeAsStringAsync(fileUri, payload, { encoding: FileSystem.EncodingType.UTF8 });
+      Alert.alert('Export complete', `Saved ${fileName}.`);
+    } catch (e) {
+      Alert.alert('Export failed', e.message || 'Could not save story file.');
+    }
+  }
+
 
   async function importStoryState() {
-    const parsed = tryParseJson(storyTransferText, null);
-    if (!parsed || typeof parsed !== 'object') {
-      Alert.alert('Invalid story JSON', 'Paste a valid exported story JSON object.');
-      return;
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: 'application/json',
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (picked.canceled || !picked.assets?.length) return;
+      const uri = picked.assets[0].uri;
+      const raw = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.UTF8 });
+      const parsed = tryParseJson(raw, null);
+      if (!parsed || typeof parsed !== 'object') {
+        Alert.alert('Invalid story JSON', 'Selected file did not contain a valid story state JSON object.');
+        return;
+      }
+
+      setServerHost(parsed.serverHost || '192.168.1.100');
+      setServerPort(parsed.serverPort || '11434');
+      setModel(parsed.model || '');
+      setStoryBible(parsed.storyBible || '');
+      setApproved(parsed.approved || []);
+      setSceneSummaries(parsed.sceneSummaries || []);
+      setRollingSummary(parsed.rollingSummary || '');
+      setCharacters((parsed.characters || []).map(normalizeCharacter));
+      setSceneNum(parsed.sceneNum || 1);
+      setContOptions(parsed.contOptions || []);
+      setPrompts(parsed.prompts || DEFAULT_PROMPTS);
+      setLastCycle(parsed.lastCycle || null);
+      setSetupAuthorOpen(parsed.setupAuthorOpen || '');
+      setPendingBible(parsed.pendingBible || '');
+      setAutoMode(!!parsed.autoMode);
+      setRevisionNotes(parsed.revisionNotes || '');
+      setPhase(parsed.pendingBible ? PHASE.BIBLE_REVIEW : parsed.storyBible ? PHASE.CONT_CHOICE : PHASE.SETUP);
+
+      await persist({
+        ...parsed,
+        characters: (parsed.characters || []).map(normalizeCharacter),
+        prompts: parsed.prompts || DEFAULT_PROMPTS,
+        setupAuthorOpen: parsed.setupAuthorOpen || '',
+        pendingBible: parsed.pendingBible || '',
+        autoMode: !!parsed.autoMode,
+        revisionNotes: parsed.revisionNotes || '',
+      });
+      Alert.alert('Import complete', 'Story state loaded successfully.');
+    } catch (e) {
+      Alert.alert('Import failed', e.message || 'Could not load story file.');
     }
-
-    setServerHost(parsed.serverHost || '192.168.1.100');
-    setServerPort(parsed.serverPort || '11434');
-    setModel(parsed.model || '');
-    setStoryBible(parsed.storyBible || '');
-    setApproved(parsed.approved || []);
-    setSceneSummaries(parsed.sceneSummaries || []);
-    setRollingSummary(parsed.rollingSummary || '');
-    setCharacters((parsed.characters || []).map(normalizeCharacter));
-    setSceneNum(parsed.sceneNum || 1);
-    setContOptions(parsed.contOptions || []);
-    setPrompts(parsed.prompts || DEFAULT_PROMPTS);
-    setLastCycle(parsed.lastCycle || null);
-    setPhase(parsed.storyBible ? PHASE.CONT_CHOICE : PHASE.SETUP);
-    setStoryTransferOpen(false);
-
-    await persist({
-      ...parsed,
-      characters: (parsed.characters || []).map(normalizeCharacter),
-      prompts: parsed.prompts || DEFAULT_PROMPTS,
-    });
   }
+
 
   if (phase === PHASE.LOADING) {
     return (
@@ -686,6 +883,16 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.title}>The Story Room (Android + Ollama)</Text>
         <Text style={styles.small}>Phase: {PHASE_LABEL[phase]}</Text>
+        <Pressable
+          style={[styles.buttonSecondary, { marginTop: 4 }]}
+          onPress={async () => {
+            const next = !autoMode;
+            setAutoMode(next);
+            await persist(makeSnapshot({ autoMode: next }));
+          }}
+        >
+          <Text style={styles.buttonText}>Auto Mode: {autoMode ? 'ON' : 'OFF'}</Text>
+        </Pressable>
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Backend</Text>
@@ -714,13 +921,25 @@ export default function App() {
         </View>
 
         <View style={styles.row}>
-          <Pressable style={styles.buttonSecondary} onPress={exportStoryState}>
-            <Text style={styles.buttonText}>Export Story State</Text>
-          </Pressable>
-          <Pressable style={styles.buttonSecondary} onPress={() => setStoryTransferOpen(true)}>
-            <Text style={styles.buttonText}>Import Story State</Text>
+          <Pressable style={styles.buttonSecondary} onPress={handleStartOver}>
+            <Text style={styles.buttonText}>Start Over Completely</Text>
           </Pressable>
         </View>
+
+        <View style={styles.row}>
+          <Pressable style={styles.buttonSecondary} onPress={exportStoryState}>
+            <Text style={styles.buttonText}>Save Story File</Text>
+          </Pressable>
+          <Pressable style={styles.buttonSecondary} onPress={importStoryState}>
+            <Text style={styles.buttonText}>Load Story File</Text>
+          </Pressable>
+        </View>
+        <TextInput
+          value={storyFileName}
+          onChangeText={setStoryFileName}
+          placeholder="File name (e.g. arc-1.json)"
+          style={styles.input}
+        />
 
         {phase === PHASE.SETUP && (
           <View style={styles.card}>
@@ -729,6 +948,24 @@ export default function App() {
             <Pressable style={styles.button} onPress={handleSetup}>
               <Text style={styles.buttonText}>{isBusy ? 'Opening...' : 'Open Story Room'}</Text>
             </Pressable>
+          </View>
+        )}
+
+
+        {phase === PHASE.BIBLE_REVIEW && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Review Story Bible</Text>
+            {setupAuthorOpen ? <Text style={styles.small}>Author draft:
+{setupAuthorOpen}</Text> : null}
+            <TextInput value={pendingBible} onChangeText={setPendingBible} style={styles.textareaLg} multiline />
+            <View style={styles.row}>
+              <Pressable style={styles.button} onPress={acceptStoryBible}>
+                <Text style={styles.buttonText}>{isBusy ? 'Accepting...' : 'Accept Story Bible'}</Text>
+              </Pressable>
+              <Pressable style={styles.buttonSecondary} onPress={retryStoryBible}>
+                <Text style={styles.buttonText}>{isBusy ? 'Retrying...' : 'Retry Story Bible'}</Text>
+              </Pressable>
+            </View>
           </View>
         )}
 
@@ -768,6 +1005,8 @@ export default function App() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Scene {sceneNum} — Your Review</Text>
             <TextInput value={editableDraft} onChangeText={setEditableDraft} style={styles.textareaLg} multiline />
+            <Text style={styles.small}>Additional revision suggestions (used on Retry Revision):</Text>
+            <TextInput value={revisionNotes} onChangeText={setRevisionNotes} style={styles.textarea} multiline />
             <View style={styles.row}>
               <Pressable style={styles.button} onPress={handleAccept}>
                 <Text style={styles.buttonText}>{isBusy ? 'Accepting...' : 'Accept Scene & Continue'}</Text>
@@ -851,22 +1090,6 @@ export default function App() {
             </Pressable>
             <Pressable style={styles.buttonSecondary} onPress={() => setAdminOpen(false)}>
               <Text style={styles.buttonText}>Cancel</Text>
-            </Pressable>
-          </View>
-        </SafeAreaView>
-      </Modal>
-
-      <Modal visible={storyTransferOpen} animationType="slide">
-        <SafeAreaView style={styles.modalWrap}>
-          <Text style={styles.title}>Story State Transfer</Text>
-          <Text style={styles.small}>Paste exported JSON to import, or copy this JSON to save externally.</Text>
-          <TextInput value={storyTransferText} onChangeText={setStoryTransferText} multiline style={styles.textareaLg} />
-          <View style={styles.row}>
-            <Pressable style={styles.button} onPress={importStoryState}>
-              <Text style={styles.buttonText}>Import</Text>
-            </Pressable>
-            <Pressable style={styles.buttonSecondary} onPress={() => setStoryTransferOpen(false)}>
-              <Text style={styles.buttonText}>Close</Text>
             </Pressable>
           </View>
         </SafeAreaView>

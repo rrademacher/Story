@@ -42,3 +42,14 @@ Standalone React Native (Expo) mobile app scaffold for running the Story Room wo
 
 - This scaffold uses non-streaming Ollama chat responses (`/api/chat`, `stream: false`) for simpler mobile state handling.
 - Prompt templates are stored in `src/defaultPrompts.js` and editable in-app via Admin Prompt Editor.
+
+## Troubleshooting
+
+- If bundling fails with `Cannot find module 'babel-preset-expo'`, reinstall with dev dependencies enabled:
+  ```bash
+  npm install --include=dev
+  ```
+  Then clear Metro cache and restart:
+  ```bash
+  npx expo start -c
+  ```

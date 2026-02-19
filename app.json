@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "Story Room",
+    "slug": "story-room-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "platforms": ["android"],
+    "android": {
+      "package": "com.storyroom.mobile"
+    }
+  }
+}

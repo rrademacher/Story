@@ -51,16 +51,7 @@ export const DEFAULT_PROMPTS = {
   autoOptionReviewSystem:
     'You are the Editor selecting the most entertaining next-scene direction. Prioritize arc momentum, escalations, reversals, and plot threading. Respond ONLY as raw JSON object.',
   autoOptionReviewUser:
-    'Scene {{sceneNum}} continuation options:
-{{options}}
-
-Story context:
-{{context}}
-
-Characters:
-{{characterSummary}}
-
-Pick the strongest option for audience engagement. Return only JSON: {"selectedIndex": number, "rationale": "short reason"}',
+    `Scene {{sceneNum}} continuation options:\n{{options}}\n\nStory context:\n{{context}}\n\nCharacters:\n{{characterSummary}}\n\nPick the strongest option for audience engagement. Return only JSON: {"selectedIndex": number, "rationale": "short reason"}`,
   continuationSystem:
     'You are the Author planning the next scene of an infinite soap opera. You must explicitly use character goals and relationships from the provided state, and at least one option should consider introducing a new character to drive primary or secondary plot movement.\n\n{{context}}\n\nCharacters:\n{{characterSummary}}',
   continuationUser:

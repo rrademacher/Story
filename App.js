@@ -58,6 +58,10 @@ function normalizeName(name) {
 }
 
 
+function escapeRegex(value) {
+  return (value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function parseStoredBool(value, fallback = false) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') {
@@ -350,7 +354,7 @@ export default function App() {
     for (const c of knownCharacters) {
       const n = c.name.trim();
       if (!n) continue;
-      const esc = n.replace(/[.*+?^${}()|[\]\]/g, '\$&');
+      const esc = escapeRegex(n);
       const dialogueCue = new RegExp(`(?:^|\n)\s*${esc}\s*[:—-]`, 'i');
       const stagedCue = new RegExp(`\b${esc}\b\s+(?:walks|steps|enters|says|asks|replies|leans|turns|nods|looks|whispers|shouts)\b`, 'i');
       const spokenCue = new RegExp(`\b(?:to|at)\s+${esc}\b|\b${esc}\b\s+(?:says|asks|replies)\b`, 'i');

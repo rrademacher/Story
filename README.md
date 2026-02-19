@@ -10,12 +10,20 @@ Standalone React Native (Expo) mobile app scaffold for running the Story Room wo
 - Story-room scene loop adapted from the provided application example.
 - **Character Corner**:
   - Lists all known characters.
-  - Character detail editor for full memory objects (`workingMemory` and `episodicMemory`) as editable JSON.
+  - Character detail editor for full memory objects (`workingMemory`, `episodicMemory`, and `longTermMemory`) as editable JSON.
 - **Admin Prompt Editor**:
   - Edits default backend prompts/instructions for all generation steps.
 - Duplicate-character mitigation:
   - Name normalization (`trim + lowercase`) for identity matching.
   - Character merge logic for updates from extracted/new character sets.
+- Character feedback and memory updates are limited to characters actually present in a scene.
+- Retry option during review (`Retry Revision`) to generate an alternative revision pass.
+- Compact story-context memory management:
+  - Rolling summary + per-scene summaries + last two full scenes for prompt context.
+- Lightweight long-term character memory retrieval:
+  - Per-character long-term memory entries are appended (not overwritten).
+  - A planning/retrieval step uses token-overlap ranking to inject relevant memory into character reactions.
+- Full story state export/import (JSON) from inside the app.
 
 ## Run locally
 

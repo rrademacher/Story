@@ -20,9 +20,9 @@ export const DEFAULT_PROMPTS = {
   extractCharactersUser:
     'Known characters: {{knownNames}}\n\nScene:\n{{draft}}\n\nReturn a JSON array of any NEW named characters who appear. Example: ["Anna","Marcus"]. If none, return [].',
   sceneParticipantsSystem:
-    'You identify which known characters are actually present in a scene. Respond ONLY with a raw JSON array of names from the provided known list. No markdown.',
+    'You identify which known characters are actively participating on-scene (dialogue/action) versus only mentioned. Respond ONLY as raw JSON array. No markdown.',
   sceneParticipantsUser:
-    'Known character names: {{knownNames}}\n\nScene:\n{{scene}}\n\nReturn ONLY names that are truly present/involved in the scene from the known list. If none, return [].',
+    'Known character names: {{knownNames}}\n\nScene:\n{{scene}}\n\nReturn ONLY active on-scene participants (not off-screen references/mentions). Preferred format: [{"name":"Anna","active":true}] using names from the known list only. If none, return [].',
   profileSystem:
     'You generate soap opera character profiles. Respond ONLY with a raw JSON object. No markdown fences.',
   profileUser:

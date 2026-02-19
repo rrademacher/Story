@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -13,7 +13,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Picker } from '@react-native-picker/picker';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { DEFAULT_PROMPTS } from './src/defaultPrompts';
 
 const STORAGE_KEY = 'story-room-mobile-v2';
@@ -55,6 +55,18 @@ const STOPWORDS = new Set([
 
 function normalizeName(name) {
   return (name || '').trim().toLowerCase();
+}
+
+
+function parseStoredBool(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+  }
+  if (typeof value === 'number') return value !== 0;
+  return fallback;
 }
 
 function fill(template, vars) {
@@ -220,6 +232,8 @@ export default function App() {
   const [customInput, setCustomInput] = useState('');
   const [sceneNum, setSceneNum] = useState(1);
   const [autoMode, setAutoMode] = useState(false);
+  const autoModeRef = useRef(false);
+  const [isHydrated, setIsHydrated] = useState(false);
   const [revisionNotes, setRevisionNotes] = useState('');
 
   const [lastCycle, setLastCycle] = useState(null);
@@ -303,25 +317,51 @@ export default function App() {
     const knownNames = knownCharacters.map((c) => c.name);
     if (!knownNames.length) return [];
 
-    const deterministic = knownCharacters.filter((c) => nameLikelyInScene(c.name, sceneText));
-
     const llmRaw = await callOllama(
       prompts.sceneParticipantsSystem,
       fill(prompts.sceneParticipantsUser, {
         knownNames: knownNames.join(', '),
         scene: sceneText,
       }),
-      { maxTokens: 400 },
+      { maxTokens: 700 },
     );
 
-    const byLlmNames = tryParseJson(llmRaw, [])
-      .filter((n) => typeof n === 'string')
-      .map((n) => n.trim())
-      .filter(Boolean);
+    const parsed = tryParseJson(llmRaw, []);
+    const normalizedKnown = new Set(knownNames.map(normalizeName));
 
-    const nameSet = new Set([...deterministic.map((c) => normalizeName(c.name)), ...byLlmNames.map(normalizeName)]);
-    return knownCharacters.filter((c) => nameSet.has(normalizeName(c.name)));
+    const fromStructured = Array.isArray(parsed)
+      ? parsed
+          .map((item) => {
+            if (typeof item === 'string') return { name: item, active: true };
+            if (!item || typeof item !== 'object') return null;
+            return {
+              name: item.name,
+              active: item.active === true || item.participating === true,
+            };
+          })
+          .filter((item) => item && item.name && item.active)
+          .map((item) => normalizeName(item.name))
+          .filter((key) => normalizedKnown.has(key))
+      : [];
+
+    const activeSet = new Set(fromStructured);
+
+    // Fallback: only count clear on-scene participation cues, not mentions.
+    for (const c of knownCharacters) {
+      const n = c.name.trim();
+      if (!n) continue;
+      const esc = n.replace(/[.*+?^${}()|[\]\]/g, '\$&');
+      const dialogueCue = new RegExp(`(?:^|\n)\s*${esc}\s*[:—-]`, 'i');
+      const stagedCue = new RegExp(`\b${esc}\b\s+(?:walks|steps|enters|says|asks|replies|leans|turns|nods|looks|whispers|shouts)\b`, 'i');
+      const spokenCue = new RegExp(`\b(?:to|at)\s+${esc}\b|\b${esc}\b\s+(?:says|asks|replies)\b`, 'i');
+      if (dialogueCue.test(sceneText) || stagedCue.test(sceneText) || spokenCue.test(sceneText)) {
+        activeSet.add(normalizeName(c.name));
+      }
+    }
+
+    return knownCharacters.filter((c) => activeSet.has(normalizeName(c.name)));
   }
+
 
   function memoryPlanningSnippet(character, draft) {
     const retrieved = rankCharacterMemories(character, draft, 4);
@@ -329,8 +369,13 @@ export default function App() {
   }
 
 
+
   useEffect(() => {
-    if (phase !== PHASE.CONT_CHOICE || !autoMode || isBusy || !contOptions.length || !storyBible) return;
+    autoModeRef.current = autoMode;
+  }, [autoMode]);
+
+  useEffect(() => {
+    if (!isHydrated || phase !== PHASE.CONT_CHOICE || !autoModeRef.current || isBusy || !contOptions.length || !storyBible) return;
     (async () => {
       try {
         await autoAdvanceFromChoices(contOptions, characters, approved, storyBible, sceneNum);
@@ -338,7 +383,7 @@ export default function App() {
         sys(`Auto selection failed: ${e.message}`);
       }
     })();
-  }, [phase, autoMode, isBusy, contOptions, storyBible, sceneNum]);
+  }, [isHydrated, phase, isBusy, contOptions, storyBible, sceneNum]);
 
   useEffect(() => {
     (async () => {
@@ -346,6 +391,7 @@ export default function App() {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (!raw) {
           setPhase(PHASE.SETUP);
+          setIsHydrated(true);
           return;
         }
         const s = JSON.parse(raw);
@@ -363,11 +409,13 @@ export default function App() {
         setLastCycle(s.lastCycle || null);
         setSetupAuthorOpen(s.setupAuthorOpen || '');
         setPendingBible(s.pendingBible || '');
-        setAutoMode(!!s.autoMode);
+        setAutoMode(parseStoredBool(s.autoMode, false));
         setRevisionNotes(s.revisionNotes || '');
         setPhase(s.pendingBible ? PHASE.BIBLE_REVIEW : s.storyBible ? PHASE.CONT_CHOICE : PHASE.SETUP);
+        setIsHydrated(true);
       } catch {
         setPhase(PHASE.SETUP);
+        setIsHydrated(true);
       }
     })();
   }, []);
@@ -455,7 +503,7 @@ export default function App() {
       }),
     );
 
-    if (autoMode) {
+    if (autoModeRef.current) {
       await autoAdvanceFromChoices(firstOpt, [], [], pendingBible.trim(), 1);
     }
   }
@@ -483,7 +531,7 @@ export default function App() {
   }
 
   async function autoAdvanceFromChoices(options, chars, scenes, bible, num) {
-    if (!autoMode || !Array.isArray(options) || !options.length || isBusy) return;
+    if (!autoModeRef.current || !Array.isArray(options) || !options.length || isBusy) return;
     const ctx = buildStoryCtx({ bible, rollingSummary, sceneSummaries, approved: scenes });
     const pick = await pickBestOption(options, ctx, chars, num);
     const chosen = options[pick.index] || options[0];
@@ -569,7 +617,7 @@ export default function App() {
 
       await persist(makeSnapshot({ characters: allChars, lastCycle: { sceneNum: num, direction, draft, edReview, sceneCharacterNames: sceneChars.map((c) => c.name), allCharacterNames: allChars.map((c) => c.name) } }));
 
-      if (autoMode) {
+      if (autoModeRef.current) {
         sys('Auto Mode: auto-accepting revised scene and continuing.');
         await autoAcceptScene(revised, allChars);
       }
@@ -697,7 +745,7 @@ export default function App() {
       }),
     );
 
-    if (autoMode) {
+    if (autoModeRef.current) {
       await autoAdvanceFromChoices(nextOpts, updatedChars, newApproved, storyBible, newNum);
     }
   }
@@ -784,6 +832,7 @@ export default function App() {
           setPendingBible('');
           setCustomInput('');
           setSceneNum(1);
+          autoModeRef.current = false;
           setAutoMode(false);
           setRevisionNotes('');
           setLastCycle(null);
@@ -799,6 +848,9 @@ export default function App() {
         : `${(storyFileName || 'story-room-state').trim()}.json`;
       const payload = JSON.stringify(makeSnapshot(), null, 2);
 
+      if (!FileSystem.StorageAccessFramework?.requestDirectoryPermissionsAsync) {
+        throw new Error('Storage Access Framework is unavailable in this runtime.');
+      }
       const perms = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
       if (!perms.granted) {
         Alert.alert('Export cancelled', 'Directory permission was not granted.');
@@ -850,7 +902,7 @@ export default function App() {
       setLastCycle(parsed.lastCycle || null);
       setSetupAuthorOpen(parsed.setupAuthorOpen || '');
       setPendingBible(parsed.pendingBible || '');
-      setAutoMode(!!parsed.autoMode);
+      setAutoMode(parseStoredBool(parsed.autoMode, false));
       setRevisionNotes(parsed.revisionNotes || '');
       setPhase(parsed.pendingBible ? PHASE.BIBLE_REVIEW : parsed.storyBible ? PHASE.CONT_CHOICE : PHASE.SETUP);
 
@@ -860,7 +912,7 @@ export default function App() {
         prompts: parsed.prompts || DEFAULT_PROMPTS,
         setupAuthorOpen: parsed.setupAuthorOpen || '',
         pendingBible: parsed.pendingBible || '',
-        autoMode: !!parsed.autoMode,
+        autoMode: parseStoredBool(parsed.autoMode, false),
         revisionNotes: parsed.revisionNotes || '',
       });
       Alert.alert('Import complete', 'Story state loaded successfully.');
@@ -886,7 +938,8 @@ export default function App() {
         <Pressable
           style={[styles.buttonSecondary, { marginTop: 4 }]}
           onPress={async () => {
-            const next = !autoMode;
+            const next = !autoModeRef.current;
+            autoModeRef.current = next;
             setAutoMode(next);
             await persist(makeSnapshot({ autoMode: next }));
           }}
